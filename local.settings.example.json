@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FD_BASE_URL": "http://127.0.0.1:4010",
+    "FD_CLIENT_ID": "tpex-ingestion",
+    "FD_CLIENT_SECRET": "s3cr3t-value",
+    "FD_DB_PATH": "data/facilitydesk.db"
+  }
+}

@@ -1,0 +1,990 @@
+openapi: 3.0.3
+info:
+  title: FacilityDesk Client API
+  version: "1.0"
+  description: |
+    FacilityDesk is a (fictional) SaaS platform used by facility managers to handle
+    maintenance tickets for the buildings they operate. This is the read-only subset
+    of the Client API relevant to the assignment.
+
+    ## Authentication
+    Exchange your `client_id` / `client_secret` for a bearer token at `POST /auth/token`.
+    Tokens are valid for **30 minutes**. Requests with a missing or expired token
+    return `401`.
+
+    ## Rate limiting
+    Every client is limited to **60 requests per minute** across all endpoints.
+    Exceeding it returns `429 Too Many Requests` with a `Retry-After` header (seconds).
+
+    ## Pagination
+    Paginated endpoints return an envelope with `data`, `links` and `meta`.
+    `links.next` is the absolute URL of the next page, or `null` on the last page.
+
+    ## Behaviour you should know about
+    - `GET /tickets` returns tickets **newest first** (by `id` descending; ids are
+      monotonically increasing). It has **no** filter on `updated_at` or `created_at`.
+    - Ticket `updated_at` changes when a field of the ticket itself changes (e.g.
+      `current_step`, `priority`). It does **not** change when activities or chat
+      messages are added.
+    - Tickets can be **deleted** by users. Deleted tickets disappear from `GET /tickets`,
+      and `GET /tickets/{ticket_id}` and its sub-resources return `404`.
+    - Tickets can move out of a closed state again (re-opened), but this is rare.
+    - Chat messages do not contain the ticket id or the chat type; these are only known
+      from the request path. Activity and chat message ids are globally unique.
+    - Timestamps are ISO 8601 with an offset. Not all timestamps are in UTC.
+    - Nullable fields may be `null` or omitted.
+
+    ## Examples
+    The response examples in this document were captured from production responses
+    (anonymised). The schemas were written by the FacilityDesk team.
+
+    ## Local mock
+    You can serve this spec locally with
+    `npx @stoplight/prism-cli mock openapi.yaml` (listens on http://127.0.0.1:4010).
+    The mock is stateless and returns the examples below. Select a specific example
+    or status code with the `Prefer` header, e.g. `Prefer: example=closed_ticket`
+    or `Prefer: code=404`.
+servers:
+  - url: http://127.0.0.1:4010
+    description: Local Prism mock
+  - url: https://api.facilitydesk.example/client-api/v1
+    description: Production (fictional)
+
+tags:
+  - name: Authorization
+    description: Obtain bearer tokens.
+  - name: Buildings
+    description: Buildings (a.k.a. assets) the client has access to.
+  - name: Tickets
+    description: Maintenance tickets and their activities and chat messages.
+
+# Shared example payloads, referenced below via YAML aliases.
+x-example-tickets:
+  open: &open_ticket
+    id: 48213
+    title: No heating on 4th floor
+    description: All radiators on the east side of the 4th floor are cold.
+    category_id: 11
+    category_name: Heating
+    priority: HIGH
+    current_step: VISIT_SCHEDULED
+    building_id: 101
+    building_name: Harbour Offices
+    exact_location: 4th floor, east wing
+    supplier_name: CoolAir Services
+    tenant_company_name: Tenant Co
+    origin: portal
+    deadline_at: "2026-10-03T17:00:00+02:00"
+    site_visit_at: "2026-10-02T09:00:00+02:00"
+    created_at: "2026-10-01T08:12:44+02:00"
+    updated_at: "2026-10-01T07:02:51+00:00"
+    users:
+      - {
+          id: 17,
+          name: Mark Jansen,
+          email: mark.jansen@tpex.example,
+          role: OWNER,
+        }
+      - {
+          id: 3021,
+          name: Sanne de Vries,
+          email: sanne.devries@tenant-co.example,
+          role: TENANT,
+        }
+  closed: &closed_ticket
+    id: 48190
+    title: Leaking tap in pantry
+    description: Tap in the 2nd floor pantry keeps dripping.
+    category_id: 21
+    category_name: Leakage
+    priority: medium
+    current_step: ISSUE_CLOSED
+    building_id: 102
+    building_name: Stadium Tower
+    exact_location: 2nd floor pantry
+    supplier_name: AquaFix BV
+    tenant_company_name: null
+    origin: email
+    deadline_at: null
+    site_visit_at: "2026-09-28 13:30:00"
+    created_at: "2026-09-27T16:45:10+02:00"
+    updated_at: "2026-09-29T10:05:00+00:00"
+    users:
+      - {
+          id: 17,
+          name: Mark Jansen,
+          email: mark.jansen@tpex.example,
+          role: OWNER,
+        }
+  sparse: &sparse_ticket
+    id: 48177
+    title: Badge reader not working
+    description: null
+    category_id: null
+    category_name: null
+    priority: null
+    current_step: ISSUE_REPORTED
+    building_id: 215
+    building_name: Spree Campus
+    exact_location: null
+    supplier_name: null
+    origin: phone
+    created_at: "2026-09-27T09:01:00+00:00"
+    updated_at: "2026-09-27T09:01:00+00:00"
+    users: []
+  on_hold: &on_hold_ticket
+    id: 41877
+    title: CO2 sensor in meeting room 3.12 reports high values
+    description: Waiting for the tenant to confirm the room can be closed for a day.
+    category_id: 14
+    category_name: Air quality
+    priority: LOW
+    current_step: ON_HOLD
+    building_id: 101
+    building_name: Harbour Offices
+    exact_location: 3rd floor, room 3.12
+    supplier_name: CoolAir Services
+    tenant_company_name: Tenant Co
+    origin: portal
+    deadline_at: null
+    site_visit_at: null
+    created_at: "2026-06-12T11:20:31+02:00"
+    updated_at: "2026-06-30T15:48:02+02:00"
+    users:
+      - {
+          id: 17,
+          name: Mark Jansen,
+          email: mark.jansen@tpex.example,
+          role: OWNER,
+        }
+
+paths:
+  /auth/token:
+    post:
+      tags: [Authorization]
+      summary: Generate an access token
+      operationId: generateToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, client_secret]
+              properties:
+                client_id:
+                  type: string
+                  example: tpex-ingestion
+                client_secret:
+                  type: string
+                  example: s3cr3t-value
+      responses:
+        "200":
+          description: Token generated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_at]
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    enum: [Bearer]
+                  expires_at:
+                    type: string
+                    format: date-time
+              example:
+                access_token: 7|q3VbX9mZk2LpR8wT4nYc6JhD1sFa0GeU5iOo
+                token_type: Bearer
+                expires_at: "2026-10-05T10:30:00+00:00"
+        "401":
+          description: Invalid client credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                message: Invalid client credentials
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /buildings:
+    get:
+      tags: [Buildings]
+      summary: List buildings
+      description: Buildings the authenticated client has access to. 50 per page.
+      operationId: listBuildings
+      security:
+        - bearer_token: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Building"
+              example:
+                data:
+                  - building_id: 101
+                    building_name: Harbour Offices
+                    building_code: AMS-HO
+                    address: Pieter Heinkade 12, 1019 AB Amsterdam
+                    currency: EUR
+                    company_id: 7
+                  - building_id: 102
+                    building_name: Stadium Tower
+                    building_code: AMS-ST
+                    address: Burgerweeshuispad 301, 1076 GR Amsterdam
+                    currency: EUR
+                    company_id: 7
+                  - building_id: 215
+                    building_name: Spree Campus
+                    building_code: null
+                    address:
+                      street: Stralauer Allee 2
+                      postal_code: "10245"
+                      city: Berlin
+                      country: DE
+                    currency: EUR
+                    company_id: 7
+                links:
+                  first: http://127.0.0.1:4010/buildings?page=1
+                  prev: null
+                  next: null
+                meta:
+                  current_page: 1
+                  per_page: 50
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /tickets/categories:
+    get:
+      tags: [Tickets]
+      summary: List ticket categories
+      description: |
+        All ticket categories. Categories form a tree via `parent_id` (`null` for root
+        categories). Not paginated.
+      operationId: listTicketCategories
+      security:
+        - bearer_token: []
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Category"
+              example:
+                data:
+                  - { id: 1, parent_id: null, company_id: 7, name: HVAC }
+                  - { id: 11, parent_id: 1, company_id: 7, name: Heating }
+                  - { id: 12, parent_id: 1, company_id: 7, name: Ventilation }
+                  - { id: 2, parent_id: null, company_id: 7, name: Plumbing }
+                  - { id: 21, parent_id: 2, company_id: 7, name: Leakage }
+                  - {
+                      id: 3,
+                      parent_id: null,
+                      company_id: 7,
+                      name: Access control,
+                    }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /tickets:
+    get:
+      tags: [Tickets]
+      summary: List tickets
+      description: |
+        Tickets of all buildings the client has access to, **newest first** (by `id`
+        descending). 50 per page. Deleted tickets are not returned.
+      operationId: listTickets
+      security:
+        - bearer_token: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - name: building_ids[]
+          in: query
+          description: Only return tickets for these buildings.
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: integer
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Ticket"
+              examples:
+                last_page:
+                  summary: A single (last) page
+                  value:
+                    data:
+                      - *open_ticket
+                      - *closed_ticket
+                      - *sparse_ticket
+                      - *on_hold_ticket
+                    links:
+                      first: http://127.0.0.1:4010/tickets?page=1
+                      prev: null
+                      next: null
+                    meta:
+                      current_page: 1
+                      per_page: 50
+                first_of_many:
+                  summary: First page with more pages available
+                  value:
+                    data:
+                      - *open_ticket
+                    links:
+                      first: http://127.0.0.1:4010/tickets?page=1
+                      prev: null
+                      next: http://127.0.0.1:4010/tickets?page=2
+                    meta:
+                      current_page: 1
+                      per_page: 50
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /tickets/{ticket_id}:
+    get:
+      tags: [Tickets]
+      summary: Show ticket
+      operationId: showTicket
+      security:
+        - bearer_token: []
+      parameters:
+        - $ref: "#/components/parameters/TicketId"
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Ticket"
+              examples:
+                open_ticket:
+                  value:
+                    data: *open_ticket
+                closed_ticket:
+                  value:
+                    data: *closed_ticket
+                sparse_ticket:
+                  value:
+                    data: *sparse_ticket
+                on_hold_ticket:
+                  value:
+                    data: *on_hold_ticket
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/TicketNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /tickets/{ticket_id}/activities:
+    get:
+      tags: [Tickets]
+      summary: List ticket activities
+      description: |
+        Audit trail of a ticket (status changes, assignments, emails sent), oldest first.
+      operationId: listTicketActivities
+      security:
+        - bearer_token: []
+      parameters:
+        - $ref: "#/components/parameters/TicketId"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Activity"
+              example:
+                data:
+                  - id: 880001
+                    ticket_id: 48213
+                    message: Ticket created
+                    data: []
+                    creator:
+                      id: 3021
+                      full_name: Sanne de Vries
+                      email: sanne.devries@tenant-co.example
+                      company_id: 55
+                      company_name: Tenant Co
+                    created_at: "2026-10-01T08:12:44+02:00"
+                    emails: []
+                  - id: 880017
+                    ticket_id: 48213
+                    message: Status changed from ISSUE_REPORTED to AWAITING_SUPPLIER_CONFIRMATION
+                    data:
+                      from: ISSUE_REPORTED
+                      to: AWAITING_SUPPLIER_CONFIRMATION
+                      supplier_id: 912
+                    creator:
+                      id: 17
+                      full_name: Mark Jansen
+                      email: mark.jansen@tpex.example
+                      company_id: 7
+                      company_name: TPEX
+                    created_at: "2026-10-01T06:40:03+00:00"
+                    emails:
+                      - id: 5501
+                        sender_email: noreply@facilitydesk.example
+                        recipient_email: planning@coolair.example
+                        carbon_copies: [mark.jansen@tpex.example]
+                        subject: "New work order #48213: No heating on 4th floor"
+                        email_content: "Dear supplier, a new work order has been assigned to you..."
+                  - id: 880020
+                    ticket_id: "48213"
+                    message: Deadline updated
+                    data:
+                      deadline_at: "2026-10-03T17:00:00+02:00"
+                    creator: null
+                    created_at: "2026-10-01T06:40:05+00:00"
+                    emails: []
+                links:
+                  first: http://127.0.0.1:4010/tickets/48213/activities?page=1
+                  prev: null
+                  next: null
+                meta:
+                  current_page: 1
+                  per_page: 20
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/TicketNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /tickets/{ticket_id}/chats/{chat_type}/messages:
+    get:
+      tags: [Tickets]
+      summary: List ticket chat messages
+      description: |
+        Each ticket has one chat per `chat_type`. Messages are returned oldest first.
+        Most tickets only use one or two chat types; the others return an empty list.
+      operationId: listTicketChatMessages
+      security:
+        - bearer_token: []
+      parameters:
+        - $ref: "#/components/parameters/TicketId"
+        - name: chat_type
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/ChatType"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ChatMessage"
+              examples:
+                with_messages:
+                  value:
+                    data:
+                      - id: 330101
+                        ticket_chat_id: 9120
+                        message: "The radiators on the 4th floor are cold since this morning."
+                        author:
+                          name: Sanne de Vries
+                          profile_photo: null
+                        sent_at: "2026-10-01T08:13:10+02:00"
+                        files:
+                          - url: https://files.facilitydesk.example/t/48213/radiator.jpg
+                            name: radiator.jpg
+                        mentions: []
+                      - id: 330188
+                        ticket_chat_id: 9120
+                        message: "@Sanne de Vries a technician from CoolAir will visit tomorrow at 09:00."
+                        author:
+                          name: Mark Jansen
+                          thumbnail: https://files.facilitydesk.example/u/17.png
+                        sent_at: "2026-10-01T07:02:51+00:00"
+                        files: []
+                        mentions:
+                          - user_mentioned_id: 3021
+                            user_mentioned_full_name: Sanne de Vries
+                            mentioned_by_id: 17
+                    links:
+                      first: http://127.0.0.1:4010/tickets/48213/chats/TECHNICAL_MANAGER_AND_TENANT/messages?page=1
+                      prev: null
+                      next: null
+                    meta:
+                      current_page: 1
+                      per_page: 20
+                empty:
+                  value:
+                    data: []
+                    links:
+                      first: http://127.0.0.1:4010/tickets/48213/chats/ANNOUNCEMENT/messages?page=1
+                      prev: null
+                      next: null
+                    meta:
+                      current_page: 1
+                      per_page: 20
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/TicketNotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+components:
+  securitySchemes:
+    bearer_token:
+      type: http
+      scheme: bearer
+
+  parameters:
+    TicketId:
+      name: ticket_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      description: Items per page.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    Unauthenticated:
+      description: Missing, invalid or expired token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: Unauthenticated.
+    TicketNotFound:
+      description: Ticket does not exist, was deleted, or is not accessible
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: Ticket not found
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            example: 23
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: Too Many Attempts.
+    ValidationError:
+      description: Validation errors
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+          example:
+            message: The given data was invalid.
+            errors:
+              building_ids: [The building ids must be an array.]
+
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    Paginated:
+      type: object
+      required: [data, links, meta]
+      properties:
+        data:
+          type: array
+          items: {}
+        links:
+          type: object
+          properties:
+            first:
+              type: string
+              format: uri
+            prev:
+              type: string
+              format: uri
+              nullable: true
+            next:
+              type: string
+              format: uri
+              nullable: true
+        meta:
+          type: object
+          properties:
+            current_page:
+              type: integer
+            per_page:
+              type: integer
+
+    Building:
+      type: object
+      required: [building_id, building_name, company_id]
+      properties:
+        building_id:
+          type: integer
+          format: int64
+        building_name:
+          type: string
+        building_code:
+          type: string
+          nullable: true
+          description: Short internal reference.
+        address:
+          type: string
+          nullable: true
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+        company_id:
+          type: integer
+          format: int64
+
+    Category:
+      type: object
+      required: [id, name, company_id]
+      properties:
+        id:
+          type: integer
+          format: int64
+        parent_id:
+          type: integer
+          format: int64
+          nullable: true
+        company_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+
+    TicketStep:
+      type: string
+      description: |
+        Workflow step of a ticket.
+        - Open: `ISSUE_REPORTED`
+        - In progress: `AWAITING_SUPPLIER_CONFIRMATION`, `DRAFT_WORK_ORDER`,
+          `REVIEWING_WORK_ORDER`, `VISIT_SCHEDULED`, `AWAITING_NEW_SITE_VISIT_SCHEDULE`,
+          `REVIEWING_FIX`
+        - Closed: `ISSUE_CLOSED`, `REJECTED`, `REJECTED_BY_SUPPLIER`
+      enum:
+        - ISSUE_REPORTED
+        - AWAITING_SUPPLIER_CONFIRMATION
+        - DRAFT_WORK_ORDER
+        - REVIEWING_WORK_ORDER
+        - VISIT_SCHEDULED
+        - AWAITING_NEW_SITE_VISIT_SCHEDULE
+        - REVIEWING_FIX
+        - ISSUE_CLOSED
+        - REJECTED
+        - REJECTED_BY_SUPPLIER
+
+    TicketUser:
+      type: object
+      required: [id, role]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        role:
+          type: string
+          enum: [OWNER, TENANT, SUPPLIER, FOLLOWER]
+
+    Ticket:
+      type: object
+      required: [id, title, current_step, building_id, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        category_id:
+          type: integer
+          format: int64
+          nullable: true
+        category_name:
+          type: string
+          nullable: true
+        priority:
+          type: string
+          nullable: true
+          enum: [LOW, MEDIUM, HIGH, CRITICAL, null]
+        current_step:
+          $ref: "#/components/schemas/TicketStep"
+        building_id:
+          type: integer
+          format: int64
+        building_name:
+          type: string
+        exact_location:
+          type: string
+          nullable: true
+          description: Free text, e.g. floor and unit.
+        supplier_name:
+          type: string
+          nullable: true
+        tenant_company_name:
+          type: string
+          nullable: true
+        origin:
+          type: string
+          nullable: true
+          enum: [phone, email, site_visit, portal, null]
+        deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+        site_visit_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/TicketUser"
+
+    ActivityEmail:
+      type: object
+      required: [id, sender_email, recipient_email]
+      properties:
+        id:
+          type: integer
+          format: int64
+        sender_email:
+          type: string
+          format: email
+        recipient_email:
+          type: string
+          format: email
+        carbon_copies:
+          type: array
+          items:
+            type: string
+            format: email
+        subject:
+          type: string
+          nullable: true
+        email_content:
+          type: string
+          nullable: true
+
+    Activity:
+      type: object
+      required: [id, ticket_id, message, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        ticket_id:
+          type: integer
+          format: int64
+        message:
+          type: string
+          description: Human readable description of what happened.
+        data:
+          type: object
+          additionalProperties: true
+          description: Free-form, depends on the activity type.
+        creator:
+          type: object
+          nullable: true
+          description: "`null` for system-generated activities."
+          required: [id]
+          properties:
+            id:
+              type: integer
+              format: int64
+            full_name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              format: email
+              nullable: true
+            company_id:
+              type: integer
+              format: int64
+              nullable: true
+            company_name:
+              type: string
+              nullable: true
+        created_at:
+          type: string
+          format: date-time
+        emails:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityEmail"
+
+    ChatType:
+      type: string
+      enum:
+        - SUPPLIER_AND_TENANT
+        - INTERNAL_TEAM
+        - TECHNICAL_MANAGER_AND_SUPPLIER
+        - TECHNICAL_MANAGER_AND_TENANT
+        - ANNOUNCEMENT
+
+    ChatMessage:
+      type: object
+      required: [id, message, sent_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        ticket_chat_id:
+          type: integer
+          format: int64
+        message:
+          type: string
+        author:
+          type: object
+          nullable: true
+          properties:
+            name:
+              type: string
+              nullable: true
+            profile_photo:
+              type: string
+              format: uri
+              nullable: true
+        sent_at:
+          type: string
+          format: date-time
+        files:
+          type: array
+          items:
+            type: object
+            required: [url, name]
+            properties:
+              url:
+                type: string
+                format: uri
+              name:
+                type: string
+        mentions:
+          type: array
+          items:
+            type: object
+            required: [user_mentioned_id, mentioned_by_id]
+            properties:
+              user_mentioned_id:
+                type: integer
+                format: int64
+              user_mentioned_full_name:
+                type: string
+                nullable: true
+              mentioned_by_id:
+                type: integer
+                format: int64

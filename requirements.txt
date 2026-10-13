@@ -1,0 +1,5 @@
+# Used by Azure Functions deployments (which read requirements.txt, not pyproject.toml).
+# Local development uses `uv sync` with pyproject.toml.
+azure-functions
+httpx>=0.27
+tzdata>=2024.1
