@@ -51,6 +51,19 @@ uv run python scripts/simulate_production.py --hours 24   # budget/freshness sim
 The database is a SQLite file at `data/facilitydesk.db`; open it with
 `sqlite3 data/facilitydesk.db` or any SQLite browser.
 
+### Viewing the API specification (Swagger UI)
+
+[`swagger-ui.html`](swagger-ui.html) renders [`openapi.yaml`](openapi.yaml) in
+Swagger UI. It loads the file itself, so it always shows the current spec.
+Browsers won't load it from `file://`, so serve the repo folder over HTTP:
+
+```bash
+uv run python -m http.server 8080                # then open http://127.0.0.1:8080/swagger-ui.html
+```
+
+"Try it out" sends requests to the server picked in the dropdown; with the
+Prism mock running, that is the first entry (`http://127.0.0.1:4010`).
+
 Configuration is read from environment variables (all optional; defaults
 point at the mock). Every field of `Settings` in
 [`fd_sync/config.py`](fd_sync/config.py) can be overridden as `FD_<NAME>`:
